@@ -4,5 +4,6 @@ sqlalchemy
 pydantic
 python-dotenv
 transformers
-torch
+onnxruntime
+numpy
 requests

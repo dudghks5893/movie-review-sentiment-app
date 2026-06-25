@@ -1,43 +1,78 @@
 import os
-from typing import Dict
+from pathlib import Path
+from typing import Dict, Tuple
 
-import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+import numpy as np
+import onnxruntime as ort
+from transformers import AutoTokenizer
 
 
-# 한국어 영화 리뷰 감성 분석용 경량 모델
-# Hugging Face 모델 카드 기준 NSMC 영화 리뷰 감성 이진 분류 모델이다.
+# ------------------------------------------------------------
+# 설정
+# ------------------------------------------------------------
+
 MODEL_NAME = os.getenv("SENTIMENT_MODEL_NAME", "daekeun-ml/koelectra-small-v3-nsmc")
 
-# 모델은 첫 요청 시 1회만 로드하고 이후 재사용한다.
+BASE_DIR = Path(__file__).resolve().parent
+ARTIFACT_DIR = BASE_DIR / "model_artifacts"
+
+# INT8 양자화 모델을 우선 사용하고, 없으면 FP32 ONNX 모델을 사용한다.
+QUANTIZED_MODEL_PATH = ARTIFACT_DIR / "sentiment_int8.onnx"
+FP32_MODEL_PATH = ARTIFACT_DIR / "sentiment.onnx"
+
 _tokenizer = None
-_model = None
+_session = None
+_loaded_model_type = None
 
 
-def load_model():
+def get_model_path_and_type() -> Tuple[Path, str]:
     """
-    Hugging Face tokenizer와 model을 로드한다.
+    사용할 ONNX 모델 경로와 모델 타입을 반환한다.
 
-    서버 시작 시 바로 로드하지 않고,
-    첫 감성 분석 요청이 들어왔을 때만 로드한다.
-    이렇게 하면 FastAPI 서버 시작 속도를 줄일 수 있다.
+    1순위: INT8 양자화 모델
+    2순위: FP32 ONNX 모델
     """
 
-    global _tokenizer, _model
+    if QUANTIZED_MODEL_PATH.exists():
+        return QUANTIZED_MODEL_PATH, "onnx-int8"
 
-    if _tokenizer is None or _model is None:
-        _tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-        _model = AutoModelForSequenceClassification.from_pretrained(MODEL_NAME)
-        _model.eval()
+    if FP32_MODEL_PATH.exists():
+        return FP32_MODEL_PATH, "onnx-fp32"
 
-    return _tokenizer, _model
+    raise FileNotFoundError(
+        "ONNX model file not found. Run `python backend/export_onnx.py` first."
+    )
+
+
+def load_onnx_runtime():
+    """
+    tokenizer와 ONNX Runtime 세션을 로드한다.
+
+    최초 요청 시 1회만 로드하고 이후에는 재사용한다.
+    """
+
+    global _tokenizer, _session, _loaded_model_type
+
+    if _tokenizer is None:
+        _tokenizer = AutoTokenizer.from_pretrained(ARTIFACT_DIR)
+
+    if _session is None:
+        model_path, model_type = get_model_path_and_type()
+
+        _session = ort.InferenceSession(
+            str(model_path),
+            providers=["CPUExecutionProvider"],
+        )
+        _loaded_model_type = model_type
+
+    return _tokenizer, _session, _loaded_model_type
 
 
 def fallback_sentiment(text: str) -> Dict[str, float | str]:
     """
-    Hugging Face 모델 로드 실패 시 사용할 예비 감성 분석 함수.
+    ONNX 모델 로드 실패 시 사용할 예비 감성 분석 함수.
 
-    배포 환경에서 모델 다운로드가 실패해도 API 전체가 멈추지 않도록 한다.
+    모델 파일 누락 또는 런타임 오류가 발생해도 API 전체가 중단되지 않도록 한다.
     """
 
     positive_words = [
@@ -74,19 +109,22 @@ def fallback_sentiment(text: str) -> Dict[str, float | str]:
     }
 
 
+def softmax(logits: np.ndarray) -> np.ndarray:
+    """
+    logits 값을 확률값으로 변환한다.
+    """
+
+    logits = logits - np.max(logits, axis=1, keepdims=True)
+    exp_values = np.exp(logits)
+    return exp_values / np.sum(exp_values, axis=1, keepdims=True)
+
+
 def analyze_sentiment(text: str) -> Dict[str, float | str]:
     """
-    리뷰 내용을 입력받아 감성 분석 결과를 반환한다.
+    리뷰 내용을 입력받아 ONNX Runtime으로 감성 분석을 수행한다.
 
-    이 모델은 이진 분류 모델이므로 class index 0은 부정,
-    class index 1은 긍정으로 해석한다.
-
-    반환 예시:
-    {
-        "sentiment_label": "positive",
-        "sentiment_score": 0.9619,
-        "model_name": "daekeun-ml/koelectra-small-v3-nsmc"
-    }
+    class index 0: negative
+    class index 1: positive
     """
 
     clean_text = text.strip()
@@ -95,44 +133,47 @@ def analyze_sentiment(text: str) -> Dict[str, float | str]:
         return {
             "sentiment_label": "neutral",
             "sentiment_score": 0.0,
-            "model_name": MODEL_NAME,
+            "model_name": "onnx-runtime",
         }
 
     try:
-        tokenizer, model = load_model()
+        tokenizer, session, model_type = load_onnx_runtime()
 
-        # 입력 문장을 모델 입력 형식으로 변환한다.
-        inputs = tokenizer(
+        encoded = tokenizer(
             clean_text,
-            return_tensors="pt",
+            return_tensors="np",
             truncation=True,
-            padding=True,
+            padding="max_length",
             max_length=128,
         )
 
-        # 추론 시에는 gradient 계산이 필요 없으므로 no_grad를 사용한다.
-        with torch.no_grad():
-            outputs = model(**inputs)
-            probabilities = torch.softmax(outputs.logits, dim=1)[0]
+        required_input_names = [input_meta.name for input_meta in session.get_inputs()]
 
-        # 가장 확률이 높은 class index를 선택한다.
-        predicted_index = int(torch.argmax(probabilities).item())
-        confidence = float(probabilities[predicted_index].item())
+        ort_inputs = {
+            name: encoded[name].astype(np.int64)
+            for name in required_input_names
+            if name in encoded
+        }
 
-        # 모델 카드 기준 class index 0 = Neg, class index 1 = Pos로 해석한다.
+        outputs = session.run(None, ort_inputs)
+        logits = outputs[0]
+        probabilities = softmax(logits)[0]
+
+        predicted_index = int(np.argmax(probabilities))
+        confidence = float(probabilities[predicted_index])
+
         if predicted_index == 1:
             return {
                 "sentiment_label": "positive",
                 "sentiment_score": round(confidence, 4),
-                "model_name": MODEL_NAME,
+                "model_name": model_type,
             }
 
         return {
             "sentiment_label": "negative",
             "sentiment_score": round(-confidence, 4),
-            "model_name": MODEL_NAME,
+            "model_name": model_type,
         }
 
     except Exception:
-        # 모델 다운로드, 로드, 추론 중 오류 발생 시 예비 분석기로 대체한다.
         return fallback_sentiment(clean_text)
