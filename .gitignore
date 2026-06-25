@@ -26,4 +26,5 @@ env/
 # Cache
 .cache/
 .huggingface/
-backend/model_artifacts/sentiment.onnx
+backend/model_artifacts/*.onnx
+backend/model_artifacts/*.json
