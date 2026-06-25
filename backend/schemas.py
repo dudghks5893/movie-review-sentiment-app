@@ -7,8 +7,6 @@ from pydantic import BaseModel, ConfigDict, Field
 class MovieBase(BaseModel):
     """
     영화 데이터의 공통 필드.
-
-    영화 생성 요청과 응답 모델에서 공통으로 사용하는 필드를 정의한다.
     """
 
     title: str = Field(..., example="파묘")
@@ -24,9 +22,6 @@ class MovieBase(BaseModel):
 class MovieCreate(MovieBase):
     """
     영화 등록 요청 모델.
-
-    클라이언트가 POST /movies 요청을 보낼 때 사용하는 데이터 구조다.
-    현재는 MovieBase와 동일한 필드를 사용한다.
     """
 
     pass
@@ -35,13 +30,64 @@ class MovieCreate(MovieBase):
 class MovieResponse(MovieBase):
     """
     영화 응답 모델.
-
-    DB에 저장된 영화 데이터를 클라이언트에게 반환할 때 사용하는 구조다.
-    id와 created_at은 서버에서 자동으로 생성된다.
     """
 
     id: int
     created_at: datetime
 
-    # SQLAlchemy 모델 객체를 Pydantic 응답 모델로 변환할 수 있도록 설정한다.
     model_config = ConfigDict(from_attributes=True)
+
+
+class ReviewCreate(BaseModel):
+    """
+    리뷰 등록 요청 모델.
+
+    클라이언트는 영화 ID, 작성자, 리뷰 내용만 전달한다.
+    감성 분석 결과는 서버에서 자동 생성한다.
+    """
+
+    movie_id: int = Field(..., example=1)
+    author: str = Field(..., example="원이연")
+    content: str = Field(..., example="배우들의 연기가 좋고 몰입감이 뛰어났습니다.")
+
+
+class ReviewResponse(BaseModel):
+    """
+    리뷰 응답 모델.
+
+    DB에 저장된 리뷰 정보와 감성 분석 결과를 반환한다.
+    """
+
+    id: int
+    movie_id: int
+    author: str
+    content: str
+    sentiment_label: str
+    sentiment_score: float
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RatingResponse(BaseModel):
+    """
+    영화별 평균 감성 점수 응답 모델.
+
+    sentiment_score 평균값을 기준으로 영화 리뷰의 전체 분위기를 보여준다.
+    """
+
+    movie_id: int
+    review_count: int
+    average_sentiment_score: float
+    rating_label: str
+
+
+class SentimentResponse(BaseModel):
+    """
+    감성 분석 테스트 응답 모델.
+    """
+
+    text: str
+    sentiment_label: str
+    sentiment_score: float
+    model_name: str
