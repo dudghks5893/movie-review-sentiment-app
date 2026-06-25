@@ -16,8 +16,6 @@ st.set_page_config(
 )
 
 
-# Streamlit Community Cloud 배포 시에는 st.secrets["API_BASE_URL"] 사용
-# 로컬 실행 시에는 환경변수 또는 기본값 http://127.0.0.1:8000 사용
 def get_api_base_url():
     """
     FastAPI 백엔드 서버 주소를 가져온다.
@@ -26,8 +24,7 @@ def get_api_base_url():
         http://127.0.0.1:8000
 
     Streamlit Cloud 배포:
-        .streamlit/secrets.toml 또는 Streamlit Cloud Secrets에
-        API_BASE_URL 값을 등록해서 사용한다.
+        Streamlit Secrets에 API_BASE_URL 값을 등록해서 사용한다.
     """
 
     try:
@@ -40,7 +37,7 @@ API_BASE_URL = get_api_base_url()
 
 
 # ------------------------------------------------------------
-# API 호출 함수
+# API 요청 함수
 # ------------------------------------------------------------
 
 def request_get(path, params=None):
@@ -76,6 +73,24 @@ def request_post(path, payload):
         return response.json()
     except requests.exceptions.RequestException as error:
         st.error(f"POST 요청 실패: {error}")
+        return None
+
+
+def request_put(path, payload):
+    """
+    FastAPI PUT 요청 공통 함수.
+    """
+
+    try:
+        response = requests.put(
+            f"{API_BASE_URL}{path}",
+            json=payload,
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as error:
+        st.error(f"PUT 요청 실패: {error}")
         return None
 
 
@@ -132,12 +147,40 @@ def load_movie_rating(movie_id):
 
 
 # ------------------------------------------------------------
-# 화면 표시 함수
+# 화면 보조 함수
 # ------------------------------------------------------------
+
+def set_flash_message(message, message_type="success"):
+    """
+    등록, 수정, 삭제 후 화면 상단에 표시할 메시지를 저장한다.
+    """
+
+    st.session_state["flash_message"] = message
+    st.session_state["flash_type"] = message_type
+
+
+def show_flash_message():
+    """
+    화면 갱신 후 저장된 메시지를 출력한다.
+    """
+
+    message = st.session_state.pop("flash_message", None)
+    message_type = st.session_state.pop("flash_type", "success")
+
+    if not message:
+        return
+
+    if message_type == "success":
+        st.success(message)
+    elif message_type == "warning":
+        st.warning(message)
+    else:
+        st.info(message)
+
 
 def sentiment_badge(label):
     """
-    감성 분석 라벨을 화면에 표시하기 좋은 텍스트로 변환한다.
+    감성 분석 라벨을 한국어 표시명으로 변환한다.
     """
 
     if label == "positive":
@@ -160,9 +203,11 @@ def format_score(score):
 
 def render_movie_card(movie):
     """
-    영화 1개의 정보를 카드 형태로 표시한다.
+    영화 정보를 카드 형태로 표시하고,
+    수정/삭제 기능을 제공한다.
     """
 
+    movie_id = movie.get("id")
     poster_url = movie.get("poster_url")
 
     col1, col2 = st.columns([1, 3])
@@ -170,6 +215,7 @@ def render_movie_card(movie):
     with col1:
         if poster_url:
             st.image(poster_url, use_container_width=True)
+            st.caption("이미지가 보이지 않으면 포스터 URL을 수정하세요.")
         else:
             st.info("포스터 없음")
 
@@ -178,15 +224,76 @@ def render_movie_card(movie):
         st.write(f"**개봉일**: {movie.get('release_date', '-')}")
         st.write(f"**감독**: {movie.get('director', '-')}")
         st.write(f"**장르**: {movie.get('genre', '-')}")
-        st.caption(f"영화 ID: {movie.get('id')}")
+        st.caption(f"영화 ID: {movie_id}")
 
-        rating = load_movie_rating(movie.get("id"))
+        rating = load_movie_rating(movie_id)
         if rating:
             st.write(
                 f"**평균 감성 점수**: {format_score(rating.get('average_sentiment_score', 0))} "
                 f"/ **전체 분위기**: {sentiment_badge(rating.get('rating_label'))} "
                 f"/ **리뷰 수**: {rating.get('review_count', 0)}개"
             )
+
+    with st.expander("영화 정보 수정"):
+        with st.form(f"update_movie_form_{movie_id}"):
+            updated_title = st.text_input(
+                "영화 제목",
+                value=movie.get("title") or "",
+                key=f"update_title_{movie_id}",
+            )
+            updated_release_date = st.text_input(
+                "개봉일",
+                value=movie.get("release_date") or "",
+                key=f"update_release_date_{movie_id}",
+            )
+            updated_director = st.text_input(
+                "감독",
+                value=movie.get("director") or "",
+                key=f"update_director_{movie_id}",
+            )
+            updated_genre = st.text_input(
+                "장르",
+                value=movie.get("genre") or "",
+                key=f"update_genre_{movie_id}",
+            )
+            updated_poster_url = st.text_input(
+                "포스터 URL",
+                value=movie.get("poster_url") or "",
+                key=f"update_poster_url_{movie_id}",
+            )
+
+            submitted_update = st.form_submit_button("수정 저장")
+
+            if submitted_update:
+                if not updated_title or not updated_release_date or not updated_director or not updated_genre:
+                    st.error("제목, 개봉일, 감독, 장르는 비워둘 수 없습니다.")
+                else:
+                    payload = {
+                        "title": updated_title,
+                        "release_date": updated_release_date,
+                        "director": updated_director,
+                        "genre": updated_genre,
+                        "poster_url": updated_poster_url or None,
+                    }
+
+                    updated_movie = request_put(f"/movies/{movie_id}", payload)
+
+                    if updated_movie:
+                        set_flash_message(f"'{updated_movie['title']}' 영화 정보가 수정되었습니다.")
+                        st.rerun()
+
+    delete_col, _ = st.columns([1, 5])
+
+    with delete_col:
+        if st.button(
+            "영화 삭제",
+            key=f"delete_movie_{movie_id}",
+        ):
+            deleted = request_delete(f"/movies/{movie_id}")
+
+            if deleted:
+                set_flash_message(f"'{deleted['title']}' 영화가 삭제되었습니다.")
+                st.rerun()
 
 
 def render_reviews_table(reviews):
@@ -199,6 +306,7 @@ def render_reviews_table(reviews):
         return
 
     rows = []
+
     for review in reviews:
         rows.append(
             {
@@ -223,6 +331,8 @@ def render_reviews_table(reviews):
 st.title("🎬 영화 리뷰 감성 분석 웹앱")
 st.caption("Streamlit 프론트엔드와 FastAPI 백엔드를 연결한 영화 리뷰 감성 분석 서비스입니다.")
 
+show_flash_message()
+
 with st.sidebar:
     st.header("서버 설정")
     st.write("현재 API 서버")
@@ -232,7 +342,6 @@ with st.sidebar:
         st.rerun()
 
 
-# 백엔드 서버 상태 확인
 server_status = request_get("/")
 
 if server_status:
@@ -267,17 +376,6 @@ with tab_movies:
             with st.container(border=True):
                 render_movie_card(movie)
 
-                delete_col, _ = st.columns([1, 5])
-                with delete_col:
-                    if st.button(
-                        "영화 삭제",
-                        key=f"delete_movie_{movie.get('id')}",
-                    ):
-                        deleted = request_delete(f"/movies/{movie.get('id')}")
-                        if deleted:
-                            st.success(f"'{movie.get('title')}' 영화가 삭제되었습니다.")
-                            st.rerun()
-
 
 # ------------------------------------------------------------
 # 탭 2. 영화 추가
@@ -310,8 +408,8 @@ with tab_add_movie:
                 created_movie = request_post("/movies", payload)
 
                 if created_movie:
-                    st.success(f"'{created_movie['title']}' 영화가 등록되었습니다.")
-                    st.json(created_movie)
+                    set_flash_message(f"'{created_movie['title']}' 영화가 등록되었습니다.")
+                    st.rerun()
 
 
 # ------------------------------------------------------------
@@ -360,16 +458,12 @@ with tab_add_review:
                     created_review = request_post("/reviews", payload)
 
                     if created_review:
-                        st.success("리뷰가 등록되었고 감성 분석이 완료되었습니다.")
-
-                        st.write("분석 결과")
-                        st.metric(
-                            label="감성",
-                            value=sentiment_badge(created_review["sentiment_label"]),
-                            delta=format_score(created_review["sentiment_score"]),
+                        set_flash_message(
+                            f"리뷰가 등록되었습니다. 감성 분석 결과: "
+                            f"{sentiment_badge(created_review['sentiment_label'])} "
+                            f"({format_score(created_review['sentiment_score'])})"
                         )
-
-                        st.json(created_review)
+                        st.rerun()
 
 
 # ------------------------------------------------------------

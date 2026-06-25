@@ -9,8 +9,6 @@ from database import Base, engine, get_db
 from sentiment import MODEL_NAME, analyze_sentiment
 
 
-# SQLAlchemy 모델 기준으로 DB 테이블을 생성한다.
-# 기존 DB가 있으면 없는 테이블만 추가 생성된다.
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
@@ -19,10 +17,9 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Streamlit 프론트엔드에서 API 호출을 할 수 있도록 CORS를 허용한다.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 개발 단계에서는 전체 허용
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -82,6 +79,30 @@ def get_movie(
     return movie
 
 
+@app.put("/movies/{movie_id}", response_model=schemas.MovieResponse, tags=["Movies"])
+def update_movie(
+    movie_id: int,
+    movie_update: schemas.MovieUpdate,
+    db: Session = Depends(get_db),
+):
+    """
+    특정 영화 정보 수정 API.
+
+    제목, 개봉일, 감독, 장르, 포스터 URL을 수정할 수 있다.
+    """
+
+    movie = crud.update_movie(
+        db=db,
+        movie_id=movie_id,
+        movie_update=movie_update,
+    )
+
+    if movie is None:
+        raise HTTPException(status_code=404, detail="Movie not found")
+
+    return movie
+
+
 @app.delete("/movies/{movie_id}", response_model=schemas.MovieResponse, tags=["Movies"])
 def delete_movie(
     movie_id: int,
@@ -108,8 +129,6 @@ def create_review(
 ):
     """
     리뷰 등록 API.
-
-    리뷰 내용이 저장되기 전에 감성 분석이 자동으로 실행된다.
     """
 
     db_review = crud.create_review(db=db, review=review)
@@ -127,8 +146,6 @@ def get_reviews(
 ):
     """
     전체 리뷰 조회 API.
-
-    기본값은 최근 10개 리뷰 조회다.
     """
 
     return crud.get_reviews(db=db, limit=limit)
@@ -195,8 +212,6 @@ def test_sentiment(
 ):
     """
     감성 분석 모델 테스트 API.
-
-    DB 저장 없이 입력 문장에 대한 감성 분석 결과만 확인한다.
     """
 
     result = analyze_sentiment(text)

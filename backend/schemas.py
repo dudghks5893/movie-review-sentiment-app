@@ -27,6 +27,21 @@ class MovieCreate(MovieBase):
     pass
 
 
+class MovieUpdate(BaseModel):
+    """
+    영화 정보 수정 요청 모델.
+
+    모든 필드는 선택값이다.
+    입력된 필드만 기존 영화 정보에 반영한다.
+    """
+
+    title: Optional[str] = Field(default=None, example="파묘")
+    release_date: Optional[str] = Field(default=None, example="2024-02-22")
+    director: Optional[str] = Field(default=None, example="장재현")
+    genre: Optional[str] = Field(default=None, example="미스터리, 오컬트")
+    poster_url: Optional[str] = Field(default=None, example="https://example.com/poster.jpg")
+
+
 class MovieResponse(MovieBase):
     """
     영화 응답 모델.
@@ -41,9 +56,6 @@ class MovieResponse(MovieBase):
 class ReviewCreate(BaseModel):
     """
     리뷰 등록 요청 모델.
-
-    클라이언트는 영화 ID, 작성자, 리뷰 내용만 전달한다.
-    감성 분석 결과는 서버에서 자동 생성한다.
     """
 
     movie_id: int = Field(..., example=1)
@@ -54,8 +66,6 @@ class ReviewCreate(BaseModel):
 class ReviewResponse(BaseModel):
     """
     리뷰 응답 모델.
-
-    DB에 저장된 리뷰 정보와 감성 분석 결과를 반환한다.
     """
 
     id: int
@@ -72,8 +82,6 @@ class ReviewResponse(BaseModel):
 class RatingResponse(BaseModel):
     """
     영화별 평균 감성 점수 응답 모델.
-
-    sentiment_score 평균값을 기준으로 영화 리뷰의 전체 분위기를 보여준다.
     """
 
     movie_id: int

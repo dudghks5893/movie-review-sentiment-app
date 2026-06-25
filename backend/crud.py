@@ -41,12 +41,34 @@ def get_movie(db: Session, movie_id: int):
     return db.query(models.Movie).filter(models.Movie.id == movie_id).first()
 
 
+def update_movie(db: Session, movie_id: int, movie_update: schemas.MovieUpdate):
+    """
+    특정 영화 정보 수정 함수.
+
+    전달받은 값이 있는 필드만 기존 데이터에 반영한다.
+    """
+
+    movie = get_movie(db, movie_id)
+
+    if movie is None:
+        return None
+
+    update_data = movie_update.model_dump(exclude_unset=True)
+
+    for field, value in update_data.items():
+        setattr(movie, field, value)
+
+    db.commit()
+    db.refresh(movie)
+
+    return movie
+
+
 def delete_movie(db: Session, movie_id: int):
     """
     특정 영화 삭제 함수.
 
     영화 삭제 전, 해당 영화에 연결된 리뷰를 먼저 삭제한다.
-    SQLite 외래키 제약과 관계없이 안정적으로 삭제되도록 처리한다.
     """
 
     movie = get_movie(db, movie_id)
@@ -66,8 +88,7 @@ def create_review(db: Session, review: schemas.ReviewCreate):
     """
     리뷰 등록 함수.
 
-    리뷰 내용을 Hugging Face 모델로 감성 분석한 뒤,
-    분석 결과와 함께 DB에 저장한다.
+    리뷰 내용을 감성 분석한 뒤 분석 결과와 함께 저장한다.
     """
 
     movie = get_movie(db, review.movie_id)
@@ -95,9 +116,6 @@ def create_review(db: Session, review: schemas.ReviewCreate):
 def get_reviews(db: Session, limit: int = 10):
     """
     전체 리뷰 조회 함수.
-
-    최근 등록된 리뷰가 먼저 보이도록 id 기준 내림차순으로 조회한다.
-    기본값은 최근 10개다.
     """
 
     return (
@@ -148,11 +166,6 @@ def delete_review(db: Session, review_id: int):
 def get_movie_rating(db: Session, movie_id: int):
     """
     특정 영화의 평균 감성 점수를 계산한다.
-
-    positive 리뷰는 양수, negative 리뷰는 음수로 저장되어 있으므로
-    평균 점수가 0보다 크면 전체적으로 긍정,
-    0보다 작으면 전체적으로 부정,
-    0에 가까우면 중립으로 해석한다.
     """
 
     movie = get_movie(db, movie_id)
